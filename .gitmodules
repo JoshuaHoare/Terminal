@@ -1,3 +1,0 @@
-[submodule "modules/example-module/backend"]
-	path = modules/example-module/backend
-	url = https://github.com/JoshuaHoare/terminal-example-module.git
