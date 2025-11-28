@@ -1,5 +1,8 @@
 FROM node:20-alpine
 
+# Install Docker CLI so we can spawn module containers
+RUN apk add --no-cache docker-cli
+
 WORKDIR /app
 
 COPY package.json package-lock.json* ./

@@ -12,6 +12,12 @@ export async function createServer() {
 
   app.get("/health", async () => ({ status: "ok" }));
 
+  app.get("/api/debug/new-module-clicked", async (request, reply) => {
+    console.log("[DEBUG] + New Module button was clicked");
+    request.log.info("[DEBUG] + New Module button was clicked");
+    return { ok: true };
+  });
+
   app.get("/", async (_request, reply) => {
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -48,12 +54,14 @@ export async function createServer() {
       a.link:hover { text-decoration: underline; }
       .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.8); display: none; align-items: center; justify-content: center; z-index: 50; }
       .modal { background: #020617; border-radius: 0.75rem; border: 1px solid #1f2937; padding: 1rem 1.25rem; max-width: 26rem; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.75); }
+      .modal.large { max-width: 32rem; }
       .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
       .pill { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.1rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; border: 1px solid #1f2937; color: #9ca3af; }
       .pill-dot { width: 0.45rem; height: 0.45rem; border-radius: 9999px; background: #4ade80; }
       .modal-body dt { font-size: 0.75rem; color: #9ca3af; margin-top: 0.6rem; }
       .modal-body dd { margin: 0.1rem 0 0; font-size: 0.88rem; word-break: break-all; }
       .modal-actions { margin-top: 0.9rem; display: flex; justify-content: flex-end; }
+      .log-view { margin-top: 0.4rem; background: #0b1120; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.6rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.78rem; max-height: 10rem; overflow-y: auto; white-space: pre-wrap; color: #cbd5f5; }
     </style>
   </head>
   <body>
@@ -82,6 +90,40 @@ export async function createServer() {
           </tbody>
         </table>
       </section>
+    </div>
+    <div id="new-module-modal" class="modal-backdrop">
+      <div class="modal large">
+        <div class="modal-header">
+          <div>
+            <div style="font-size:0.8rem;color:#9ca3af">New module</div>
+            <div style="font-size:1rem;font-weight:600;color:#e5e7eb">Initialise from GitHub</div>
+          </div>
+          <button type="button" id="new-module-close" class="secondary">Close</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label for="new-github-url">GitHub URL</label>
+            <input id="new-github-url" placeholder="https://github.com/you/module" />
+          </div>
+          <div class="field">
+            <label for="new-name">Local name</label>
+            <input id="new-name" placeholder="Friendly display name" />
+          </div>
+          <div class="field">
+            <label for="new-port">Host port</label>
+            <input id="new-port" type="number" min="1" max="65535" placeholder="e.g. 8101" />
+          </div>
+          <div id="new-module-status" class="status"></div>
+          <div>
+            <label style="font-size:0.75rem;color:#9ca3af;">Initialisation log</label>
+            <pre id="new-module-logs" class="log-view">(waiting)</pre>
+          </div>
+        </div>
+        <div class="modal-actions" style="gap:0.5rem; justify-content:flex-end;">
+          <button type="button" id="new-module-cancel" class="secondary">Cancel</button>
+          <button type="button" id="new-module-submit" class="primary">Initialise module</button>
+        </div>
+      </div>
     </div>
     <div id="details-modal-backdrop" class="modal-backdrop">
       <div class="modal">
@@ -282,44 +324,104 @@ export async function createServer() {
         });
       }
 
-      var newModuleBtn = document.getElementById('new-module');
-      if (newModuleBtn) {
-        newModuleBtn.addEventListener('click', async function () {
-          var githubUrlInput = prompt('GitHub URL for the new module:');
-          if (!githubUrlInput) return;
-          var githubUrl = githubUrlInput.trim();
-          if (!githubUrl) return;
+      var newModuleOpenBtn = document.getElementById('new-module');
+      var newModuleBackdrop = document.getElementById('new-module-modal');
+      var newModuleCloseBtn = document.getElementById('new-module-close');
+      var newModuleCancelBtn = document.getElementById('new-module-cancel');
+      var newModuleSubmitBtn = document.getElementById('new-module-submit');
+      var newModuleGithubInput = document.getElementById('new-github-url');
+      var newModuleNameInput = document.getElementById('new-name');
+      var newModulePortInput = document.getElementById('new-port');
+      var newModuleStatus = document.getElementById('new-module-status');
+      var newModuleLogs = document.getElementById('new-module-logs');
 
-          // Generate a simple unique logical ID and container name.
-          var id = 'mod-' + Date.now();
-          var containerName = id;
-          var serviceUrl = 'http://' + containerName + ':8000';
+      function resetNewModuleModal() {
+        if (newModuleGithubInput) newModuleGithubInput.value = '';
+        if (newModuleNameInput) newModuleNameInput.value = '';
+        if (newModulePortInput) newModulePortInput.value = '';
+        if (newModuleStatus) newModuleStatus.textContent = '';
+        if (newModuleLogs) newModuleLogs.textContent = '(waiting)';
+      }
 
-          var payload = {
-            id: id,
-            name: id,
-            serviceUrl: serviceUrl,
-            githubUrl: githubUrl,
-            enabled: false,
-            containerName: containerName,
-          };
+      function openNewModuleModal() {
+        console.log('[DEBUG] + New Module button clicked (frontend)');
+        fetch('/api/debug/new-module-clicked').catch(function(e) { console.error(e); });
+        resetNewModuleModal();
+        if (newModuleBackdrop) newModuleBackdrop.style.display = 'flex';
+      }
 
-          try {
-            var res = await fetch('/api/modules', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            });
-            if (!res.ok) {
-              alert('Failed to create module (status ' + res.status + ').');
-              return;
-            }
-            await fetchModules();
-          } catch (err) {
-            console.error(err);
-            alert('Error creating module instance.');
+      function closeNewModuleModal() {
+        if (newModuleBackdrop) newModuleBackdrop.style.display = 'none';
+      }
+
+      if (newModuleOpenBtn) {
+        newModuleOpenBtn.addEventListener('click', openNewModuleModal);
+      }
+      if (newModuleCloseBtn) {
+        newModuleCloseBtn.addEventListener('click', closeNewModuleModal);
+      }
+      if (newModuleCancelBtn) {
+        newModuleCancelBtn.addEventListener('click', closeNewModuleModal);
+      }
+      if (newModuleBackdrop) {
+        newModuleBackdrop.addEventListener('click', function (event) {
+          if (event.target === newModuleBackdrop) {
+            closeNewModuleModal();
           }
         });
+      }
+
+      async function submitNewModule() {
+        if (!newModuleGithubInput || !newModulePortInput) return;
+        var githubUrl = newModuleGithubInput.value.trim();
+        var name = newModuleNameInput ? newModuleNameInput.value.trim() : '';
+        var portValue = newModulePortInput.value.trim();
+        var port = portValue ? parseInt(portValue, 10) : NaN;
+        if (!githubUrl || !portValue || !Number.isInteger(port) || port <= 0 || port > 65535) {
+          if (newModuleStatus) newModuleStatus.textContent = 'Provide a GitHub URL and valid port (1-65535).';
+          return;
+        }
+
+        if (newModuleStatus) newModuleStatus.textContent = 'Initialising module…';
+        if (newModuleLogs) newModuleLogs.textContent = 'Spawning container…';
+        if (newModuleSubmitBtn) {
+          newModuleSubmitBtn.disabled = true;
+          newModuleSubmitBtn.textContent = 'Initialising…';
+        }
+
+        try {
+          const res = await fetch('/api/modules/initialize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ githubUrl: githubUrl, name: name, port: port }),
+          });
+          let data = {};
+          try {
+            data = await res.json();
+          } catch (err) {
+            data = {};
+          }
+          const logsText = Array.isArray(data.logs) ? data.logs.join('\\n') : '';
+          if (newModuleLogs) newModuleLogs.textContent = logsText || '(no log output)';
+          if (!res.ok) {
+            if (newModuleStatus) newModuleStatus.textContent = data.error ? String(data.error) : 'Failed to initialise module.';
+            return;
+          }
+          if (newModuleStatus) newModuleStatus.textContent = 'Module initialised successfully.';
+          await fetchModules();
+        } catch (err) {
+          console.error(err);
+          if (newModuleStatus) newModuleStatus.textContent = 'Unexpected error initialising module.';
+        } finally {
+          if (newModuleSubmitBtn) {
+            newModuleSubmitBtn.disabled = false;
+            newModuleSubmitBtn.textContent = 'Initialise module';
+          }
+        }
+      }
+
+      if (newModuleSubmitBtn) {
+        newModuleSubmitBtn.addEventListener('click', submitNewModule);
       }
 
       if (settingsSaveEl && backdropEl) {
