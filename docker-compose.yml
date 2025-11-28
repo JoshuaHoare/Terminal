@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  terminal:
+    build: ./terminal
+    container_name: terminal
+    ports:
+      - "3000:3000"
+    volumes:
+      - terminal-data:/app/data
+    environment:
+      - NODE_ENV=production
+    depends_on: []
+
+  example-module:
+    build: ./modules/example-module/backend
+    container_name: example-module
+    ports:
+      - "8000:8000"
+    environment:
+      - MODULE_NAME=example-module
+
+volumes:
+  terminal-data:
+
