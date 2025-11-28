@@ -13,7 +13,7 @@ services:
     depends_on: []
 
   example-module:
-    build: ./modules/example-module/backend
+    build: ./modules/example-module
     container_name: example-module
     ports:
       - "8000:8000"
