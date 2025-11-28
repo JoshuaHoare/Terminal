@@ -59,6 +59,9 @@ export async function createServer() {
   <body>
     <h1>Terminal: Modules</h1>
     <p>Lightweight registry of module containers. Data is stored locally in SQLite inside the <code>terminal</code> service.</p>
+    <div style="display:flex;justify-content:flex-end;align-items:center;margin-top:0.75rem;margin-bottom:0.5rem;gap:0.75rem">
+      <button type="button" id="new-module" class="primary">+ New module</button>
+    </div>
     <div class="layout">
       <section class="card">
         <h2 style="margin-top:0">Configured modules</h2>
@@ -71,48 +74,13 @@ export async function createServer() {
               <th>Service URL</th>
               <th>GitHub</th>
               <th>Status</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="modules-body">
             <tr><td colspan="5" style="padding:0.8rem 0.4rem;color:#6b7280">Loading modules…</td></tr>
           </tbody>
         </table>
-      </section>
-      <section class="card">
-        <h2 style="margin-top:0">Add / update module</h2>
-        <form id="module-form">
-          <div class="field">
-            <label for="id">ID</label>
-            <input id="id" name="id" placeholder="example-module" required />
-          </div>
-          <div class="field">
-            <label for="name">Name</label>
-            <input id="name" name="name" placeholder="Example Module" required />
-          </div>
-          <div class="field">
-            <label for="description">Description</label>
-            <textarea id="description" name="description" placeholder="Short description of what this module does"></textarea>
-          </div>
-          <div class="field">
-            <label for="serviceUrl">Service URL (inside Docker network)</label>
-            <input id="serviceUrl" name="serviceUrl" placeholder="http://example-module:8000" required />
-          </div>
-          <div class="field">
-            <label for="githubUrl">GitHub URL</label>
-            <input id="githubUrl" name="githubUrl" placeholder="https://github.com/you/example-module" />
-          </div>
-          <div class="field">
-            <label>
-              <input id="enabled" name="enabled" type="checkbox" checked style="width:auto;margin-right:0.4rem" />
-              Enabled
-            </label>
-          </div>
-          <div class="actions">
-            <button type="submit" class="primary">Save module</button>
-            <button type="button" id="load-example" class="secondary">Load example defaults</button>
-          </div>
-          <div id="form-status" class="status"></div>
-        </form>
       </section>
     </div>
     <div id="details-modal-backdrop" class="modal-backdrop">
@@ -130,21 +98,39 @@ export async function createServer() {
             <dd id="details-description"></dd>
             <dt>Service URL</dt>
             <dd><code id="details-service-url"></code></dd>
+            <dt>Container name</dt>
+            <dd id="details-container-name"></dd>
             <dt>GitHub</dt>
             <dd id="details-github"></dd>
+            <dt>Module version</dt>
+            <dd id="details-version"></dd>
             <dt>Status</dt>
             <dd><span id="details-status" class="badge"></span></dd>
             <dt>Created / Updated</dt>
             <dd id="details-timestamps"></dd>
           </dl>
+          <div style="margin-top:0.8rem;border-top:1px solid #1f2937;padding-top:0.7rem">
+            <div class="field">
+              <label for="settings-name">Local name</label>
+              <input id="settings-name" name="settings-name" placeholder="Friendly name for this instance" />
+            </div>
+            <div class="field">
+              <label for="settings-port">Host port</label>
+              <input id="settings-port" name="settings-port" type="number" min="1" max="65535" placeholder="e.g. 8101" />
+            </div>
+            <div id="settings-status" class="status"></div>
+          </div>
         </div>
         <div class="modal-actions">
           <span class="pill"><span class="pill-dot"></span>Module details</span>
+          <button type="button" id="settings-save" class="primary">Save settings</button>
         </div>
       </div>
     </div>
     <script>
       let currentModules = [];
+      let currentMetadata = {};
+      let currentSelectedId = null;
 
       async function fetchModules() {
         const statusEl = document.getElementById('modules-status');
@@ -157,55 +143,122 @@ export async function createServer() {
           currentModules = modules;
           statusEl.textContent = modules.length ? '' : 'No modules configured yet.';
           if (!modules.length) {
-            bodyEl.innerHTML = '<tr><td colspan="5" style="padding:0.8rem 0.4rem;color:#6b7280">No modules yet. Use the form on the right to add one.</td></tr>';
+            bodyEl.innerHTML = '<tr><td colspan="5" style="padding:0.8rem 0.4rem;color:#6b7280">No modules yet. Use the + New module button to add one.</td></tr>';
             return;
           }
-          bodyEl.innerHTML = modules.map(function (m) {
-            var github = m.github_url || m.githubUrl;
-            var enabled = m.enabled === true || m.enabled === 1;
-            var safe = function (v) { return v == null ? '' : String(v); };
-            var githubCell = github
+          // Fetch metadata for each module in parallel
+          const metadataEntries = await Promise.all(modules.map(async function (m) {
+            try {
+              const r = await fetch('/api/modules/' + encodeURIComponent(m.id) + '/metadata');
+              if (!r.ok) return [m.id, null];
+              const meta = await r.json();
+              return [m.id, meta];
+            } catch (e) {
+              return [m.id, null];
+            }
+          }));
+
+          currentMetadata = {};
+          metadataEntries.forEach(function (pair) {
+            const id = pair[0];
+            const meta = pair[1];
+            currentMetadata[id] = meta;
+          });
+
+          bodyEl.innerHTML = modules.map(function (m, index) {
+            const github = m.github_url || m.githubUrl;
+            const enabled = m.enabled === true || m.enabled === 1;
+            const hasPort = m.port != null;
+            const safe = function (v) { return v == null ? '' : String(v); };
+            const githubCell = github
               ? '<a class="link" href="' + github + '" target="_blank" rel="noopener noreferrer">GitHub</a>'
               : '<span style="color:#6b7280">—</span>';
-            var statusClass = enabled ? 'badge-on' : 'badge-off';
-            var statusLabel = enabled ? 'Enabled' : 'Disabled';
+            let statusClass;
+            let statusLabel;
+            if (!hasPort) {
+              statusLabel = 'Configuration';
+              statusClass = 'badge-off';
+            } else if (enabled) {
+              statusLabel = 'Enabled';
+              statusClass = 'badge-on';
+            } else {
+              statusLabel = 'Disabled';
+              statusClass = 'badge-off';
+            }
+            const meta = currentMetadata[m.id] || {};
+            const name = meta.name || m.name || m.id;
+            const service = m.service_url || m.serviceUrl;
+            const position = index + 1;
             return '<tr data-id="' + safe(m.id) + '">' +
-              '<td><code>' + safe(m.id) + '</code></td>' +
-              '<td>' + safe(m.name) + '</td>' +
-              '<td><code>' + safe(m.service_url || m.serviceUrl) + '</code></td>' +
+              '<td><code>' + safe(position) + '</code></td>' +
+              '<td>' + safe(name) + '</td>' +
+              '<td><code>' + safe(service) + '</code></td>' +
               '<td>' + githubCell + '</td>' +
               '<td><span class="badge ' + statusClass + '">' + statusLabel + '</span></td>' +
+              '<td><button type="button" class="secondary" data-delete="' + safe(m.id) + '">Delete</button></td>' +
               '</tr>';
           }).join('');
 
           Array.prototype.forEach.call(bodyEl.querySelectorAll('tr[data-id]'), function (row) {
             row.style.cursor = 'pointer';
-            row.addEventListener('click', function () {
-              var id = row.getAttribute('data-id');
-              var mod = (currentModules || []).find(function (m) { return String(m.id) === String(id); });
+            row.addEventListener('click', function (event) {
+              // Ignore clicks on delete button
+              if (event.target && event.target.getAttribute && event.target.getAttribute('data-delete')) {
+                return;
+              }
+              const id = row.getAttribute('data-id');
+              const mod = (currentModules || []).find(function (m) { return String(m.id) === String(id); });
               if (!mod) return;
-              var desc = mod.description || '';
-              var service = mod.service_url || mod.serviceUrl || '';
-              var github = mod.github_url || mod.githubUrl || '';
-              var enabledFlag = mod.enabled === true || mod.enabled === 1;
-              var statusEl = document.getElementById('details-status');
+              const meta = currentMetadata[mod.id] || {};
+              const desc = meta.description || '';
+              const service = mod.service_url || mod.serviceUrl || '';
+              const github = mod.github_url || mod.githubUrl || '';
+              const enabledFlag = mod.enabled === true || mod.enabled === 1;
+              const statusEl = document.getElementById('details-status');
+              currentSelectedId = String(mod.id || '');
               document.getElementById('details-id').textContent = String(mod.id || '');
-              document.getElementById('details-name').textContent = String(mod.name || '');
+              document.getElementById('details-name').textContent = String(meta.name || mod.name || mod.id || '');
               document.getElementById('details-description').textContent = desc || '—';
               document.getElementById('details-service-url').textContent = service || '—';
+              const containerName = mod.container_name || mod.containerName || mod.id;
+              document.getElementById('details-container-name').textContent = containerName || '—';
               document.getElementById('details-github').innerHTML = github
                 ? '<a class="link" href="' + github + '" target="_blank" rel="noopener noreferrer">' + github + '</a>'
                 : '<span style="color:#6b7280">—</span>';
+              const versionText = meta.version ? String(meta.version) : '—';
+              document.getElementById('details-version').textContent = versionText;
               statusEl.textContent = enabledFlag ? 'Enabled' : 'Disabled';
               statusEl.className = 'badge ' + (enabledFlag ? 'badge-on' : 'badge-off');
-              var created = mod.created_at || mod.createdAt;
-              var updated = mod.updated_at || mod.updatedAt;
-              var stampParts = [];
+              const created = mod.created_at || mod.createdAt;
+              const updated = mod.updated_at || mod.updatedAt;
+              const stampParts = [];
               if (created) stampParts.push('Created ' + created);
               if (updated) stampParts.push('Updated ' + updated);
               document.getElementById('details-timestamps').textContent = stampParts.join(' • ');
-              var backdrop = document.getElementById('details-modal-backdrop');
+              const backdrop = document.getElementById('details-modal-backdrop');
+              const settingsName = document.getElementById('settings-name');
+              const settingsPort = document.getElementById('settings-port');
+              const settingsStatus = document.getElementById('settings-status');
+              if (settingsName) settingsName.value = String(mod.name || meta.name || mod.id || '');
+              if (settingsPort) settingsPort.value = mod.port != null ? String(mod.port) : '';
+              if (settingsStatus) settingsStatus.textContent = '';
               backdrop.style.display = 'flex';
+            });
+          });
+
+          Array.prototype.forEach.call(bodyEl.querySelectorAll('button[data-delete]'), function (btn) {
+            btn.addEventListener('click', async function () {
+              const id = btn.getAttribute('data-delete');
+              if (!id) return;
+              if (!confirm('Delete module "' + id + '" and stop its container?')) return;
+              try {
+                const r = await fetch('/api/modules/' + encodeURIComponent(id), { method: 'DELETE' });
+                if (!r.ok) throw new Error('Delete failed with ' + r.status);
+                await fetchModules();
+              } catch (err) {
+                console.error(err);
+                alert('Failed to delete module.');
+              }
             });
           });
         } catch (err) {
@@ -215,46 +268,9 @@ export async function createServer() {
         }
       }
 
-      document.getElementById('module-form').addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const form = event.target;
-        const formStatus = document.getElementById('form-status');
-        formStatus.textContent = 'Saving…';
-        const payload = {
-          id: form.id.value.trim(),
-          name: form.name.value.trim(),
-          description: form.description.value.trim() || undefined,
-          serviceUrl: form.serviceUrl.value.trim(),
-          githubUrl: form.githubUrl.value.trim() || undefined,
-          enabled: form.enabled.checked,
-        };
-        try {
-          const res = await fetch('/api/modules', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          if (!res.ok) throw new Error('Request failed with ' + res.status);
-          formStatus.textContent = 'Saved.';
-          await fetchModules();
-        } catch (err) {
-          console.error(err);
-          formStatus.textContent = 'Failed to save module.';
-        }
-      });
-
-      document.getElementById('load-example').addEventListener('click', () => {
-        const form = document.getElementById('module-form');
-        form.id.value = 'example-module';
-        form.name.value = 'Example Module';
-        form.description.value = 'An example FastAPI module';
-        form.serviceUrl.value = 'http://example-module:8000';
-        form.githubUrl.value = '';
-        form.enabled.checked = true;
-      });
-
       var backdropEl = document.getElementById('details-modal-backdrop');
       var closeEl = document.getElementById('details-close');
+      var settingsSaveEl = document.getElementById('settings-save');
       if (backdropEl && closeEl) {
         closeEl.addEventListener('click', function () {
           backdropEl.style.display = 'none';
@@ -262,6 +278,80 @@ export async function createServer() {
         backdropEl.addEventListener('click', function (event) {
           if (event.target === backdropEl) {
             backdropEl.style.display = 'none';
+          }
+        });
+      }
+
+      var newModuleBtn = document.getElementById('new-module');
+      if (newModuleBtn) {
+        newModuleBtn.addEventListener('click', async function () {
+          var githubUrlInput = prompt('GitHub URL for the new module:');
+          if (!githubUrlInput) return;
+          var githubUrl = githubUrlInput.trim();
+          if (!githubUrl) return;
+
+          // Generate a simple unique logical ID and container name.
+          var id = 'mod-' + Date.now();
+          var containerName = id;
+          var serviceUrl = 'http://' + containerName + ':8000';
+
+          var payload = {
+            id: id,
+            name: id,
+            serviceUrl: serviceUrl,
+            githubUrl: githubUrl,
+            enabled: false,
+            containerName: containerName,
+          };
+
+          try {
+            var res = await fetch('/api/modules', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+              alert('Failed to create module (status ' + res.status + ').');
+              return;
+            }
+            await fetchModules();
+          } catch (err) {
+            console.error(err);
+            alert('Error creating module instance.');
+          }
+        });
+      }
+
+      if (settingsSaveEl && backdropEl) {
+        settingsSaveEl.addEventListener('click', async function () {
+          var id = currentSelectedId;
+          if (!id) return;
+          var nameInput = document.getElementById('settings-name');
+          var portInput = document.getElementById('settings-port');
+          var statusEl = document.getElementById('settings-status');
+          var name = nameInput ? nameInput.value.trim() : '';
+          var portValue = portInput ? portInput.value.trim() : '';
+          var port = portValue ? parseInt(portValue, 10) : NaN;
+          if (!name || !portValue || !Number.isInteger(port) || port <= 0 || port > 65535) {
+            if (statusEl) statusEl.textContent = 'Please provide a valid name and port (1-65535).';
+            return;
+          }
+          if (statusEl) statusEl.textContent = 'Saving settings…';
+          try {
+            var res2 = await fetch('/api/modules/' + encodeURIComponent(id) + '/configuration', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: name, port: port }),
+            });
+            if (!res2.ok) {
+              if (statusEl) statusEl.textContent = 'Failed to save settings (status ' + res2.status + ').';
+              return;
+            }
+            if (statusEl) statusEl.textContent = 'Saved.';
+            await fetchModules();
+          } catch (err) {
+            console.error(err);
+            if (statusEl) statusEl.textContent = 'Error saving settings.';
           }
         });
       }
